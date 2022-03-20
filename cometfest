@@ -1,216 +1,189 @@
-#!/usr/bin/env python
-#
-# v1.0.0 Written by Michael S. Kelley, UMD, Aug 2011
-#
-# v1.1.0 Added ability to read HORIZONS ephemeris files.  Revamped
-#        output to include more columns.  MSK, 03 Sep 2011
-#
-# v1.1.1 Bug fix to handle "Airmass cut-off requested" and similar
-#        lines in HORIZONS output.  In the future, fix the program so
-#        that these lines are printed out as comments.  MSK, 05 Sep
-#        2011
-#
-# v1.1.2 Bug fix to handle Mac formatted text files (boo to Macs!).
-#        MSK, 15 Sep 2011
-#
-from __future__ import print_function
+#!/usr/bin/env python3
+"""
+v1.0.0 Written by Michael S. Kelley, UMD, Aug 2011
+
+v1.1.0 Added ability to read Horizons ephemeris files.  Revamped output to
+       include more columns.  MSK, 03 Sep 2011
+
+v1.1.1 Bug fix to handle "Airmass cut-off requested" and similar lines in
+       Horizons output.  In the future, fix the program so that these lines are
+       printed out as comments.  MSK, 05 Sep 2011
+
+v1.1.2 Bug fix to handle Mac formatted text files. MSK, 15 Sep 2011
+
+v2.0.0 Use Kelley et al. (2016) approach.  Replace Minor Planet Center ephemeris
+       generation with JPL Horizons API.  Optional surface brightness output and
+       save to file.  MSK, 20 Mar 2022
+
+"""
+
+import re
 import os
 import math
-import optparse 
-import re
-import urllib2
+import argparse
+import datetime
+from urllib import request
+from urllib.parse import urlencode
+
+
+def reformat_date(date):
+    y, mon, d = date.split('-')
+    m = [None, 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].index(mon)
+    return '{}-{:02d}-{}'.format(y, m, d)
 
 ######################################################################
-def findcol(header, colname, length):
-    """Return the slice that corresponds to the position of the column
-    name + length, or an empty slice if colname is not found."""
-    i = header.find(colname)
-    if i >= 0:
-        return slice(i, i + length)
+
+
+def getcol(name, names, columns, type, format):
+    """Return the column data specified by the column name, formatted with
+    format.  Replace "n.a." with -999."""
+
+    col = [
+        format.format(type(c.strip().replace("n.a.", "-999")))
+        for c in columns[names.index(name)]
+    ]
+
+    if 'Date' in name:
+        col = [reformat_date(d) for d in col]
+
+    return col
+
+######################################################################
+
+
+def eph_from_HORIZONS(args, comet=None, cache=True):
+    """Read an ephemeris from HORIZONS API.
+
+
+    Parameters
+    ----------
+    args.designation : string
+        Target designation.
+
+    args.start, args.stop, args.step : string
+        Time coordinates.  See https://ssd-api.jpl.nasa.gov/doc/horizons.html
+
+    args.f : string, optional
+        Read ephemeris from this file.
+
+    comet : bool, optional
+        Set to ``None`` and cometfest will guess if this this a comet or
+        asteroid.
+
+    cache : bool, optional
+        Set to ``False`` to skip caching or ignore the previously cached file.
+
+    """
+
+    comments = []
+    if args.designation is None:
+        cache_filename = args.f
     else:
-        return slice(0, 0)
-
-######################################################################
-def getcol(line, col):
-    """Return the column specified by the slice col, formatted to a
-    specificed width.  Replace empty columns or "n.a." with "-999"."""
-    l = col.stop - col.start + 1
-    s = "{0:{1}}".format(line[col], l).replace("\n", '')
-    s = s.replace(" " * l, "{0:^{1}}".format("-999", l))
-    s = s.replace("n.a.", "-999")
-    return [s]
-
-######################################################################
-def packedNumber(number):
-    """Convert a number into a 2-digit packed MPC number."""
-    if len(number) > 2:
-        letter = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-        i = int(number[:len(number)-1]) - 10
-        return letter[i] + number[2:]
-    else:
-        return "{0:02}".format(int(number))
-
-######################################################################
-def desg2mpc(name):
-    """Convert a comet designation into a packed MPC comet
-    designation."""
-    name = name.upper()
-    periodicFormat = re.compile('([0-9]{1,4})([PD])(-[A-Z]+){0,1}')
-    m = periodicFormat.findall(name)
-    if len(m) > 0:
-        return "{0:04d}P".format(int(m[0][0]))
-
-    provFormat = re.compile('([PCDX])/([12][890])([0-9][0-9])\s([A-Z]{1,2})([0-9]{1,3})(-[A-Z]+)*')
-    m = provFormat.findall(name)
-    if len(m) > 0:
-        comtype, century, year, letter, number, fragment = m[0]
-        packedDesg = comtype
-
-        if century == '18':
-            packedDesg += 'I'
-        elif century == '19':
-            packedDesg += 'J'
-        elif century == '20':
-            packedDesg += 'K'
-
-        packedDesg += year
-
-
-        if len(letter) == 1:
-            packedDesg += letter
-            packedDesg += packedNumber(number)
-            if len(fragment) > 0:
-                packedDesg += fragment[1].lower()
+        if comet is None:
+            if re.match('(^[APCD]/\d+)|(^\d+[PD])', args.designation):
+                comet = True
             else:
-                packedDesg += '0'
+                comet = False
+
+        params = {
+            'format': 'text',
+            'COMMAND': '"DES={};{}"'.format(args.designation, 'CAP;NOFRAG' if comet else ''),
+            'EPHEM_TYPE': 'OBSERVER',
+            'CENTER': '"500@399"',
+            'CSV_FORMAT': 'YES',
+            'START_TIME': args.start,
+            'STOP_TIME': args.stop,
+            'STEP_SIZE': args.step,
+            'QUANTITIES': '"1,9,19,20,23,24"'
+        }
+
+        url = 'https://ssd.jpl.nasa.gov/api/horizons.api?{}'.format(
+            urlencode(params))
+
+        comments.append('# Horizons API URL {}'.format(url))
+
+        if cache:
+            cache_filename = '{}_from{}_to{}_each{}.txt'.format(
+                args.designation.lower().strip().replace(
+                    '/', '').replace('(', '').replace(')', '').replace(' ', ''),
+                args.start.strip().replace(' ', 'T').replace('-', ''),
+                args.stop.strip().replace(' ', 'T').replace('-', ''),
+                args.step.strip().replace(' ', '')
+            )
         else:
-            packedDesg += letter[0]
-            packedDesg += packedNumber(number)
-            if len(letter) == 2:
-                packedDesg += letter[1]
+            cache_filename = None
 
-    return packedDesg
-
-######################################################################
-def ephFromMPC(comet):
-    """First, check if there is a file ephemeris, else download an
-    ephemeris file from the MPC and return date, rh, delta, phase."""
-    packedDesg = desg2mpc(comet)
-    fn = "{0}.dat".format(packedDesg)
-    flag = False
-    date = []
-    rh = []
-    delta = []
-    phase = []
-    radec = []
-    m1 = []
-    m2 = []
-    elong = []
-
-    if not os.path.exists(fn):
-        print("# Downloading ephemeris from MPC and saving to file {0}".format(fn))
-        url = 'http://scully.cfa.harvard.edu/cgi-bin/returnprepeph.cgi?d=c&o={0}'.format(packedDesg)
-        url = urllib2.urlopen(url)
-        dump = url.readlines()
-        url.close()
-
-        outf = open(fn, 'w')
-        for line in dump:
-            if line.find("Date    TT") >= 0:
-                flag = True
-            elif line.find("</pre>") >= 0:
-                flag = False
-            if flag:
-                outf.write(line)
-        outf.close()
+    if os.path.exists(cache_filename) and cache:
+        with open(cache_filename, 'r') as inf:
+            data = inf.read()
+            comments.append("# Read cached ephemeris from file {}"
+                            .format(cache_filename))
     else:
-        print("# Reading ephemeris from file {0}".format(fn))
+        with request.urlopen(url) as response:
+            data = response.read().decode()
+        comments.append("# Read ephemeris from URL.".format(url))
 
-    inf = open(fn, 'rU')
-    for line in inf.readlines():
-        if line.find("Date    TT") >= 0:
-            datecol = findcol(line, "Date", 10)
-            radeccol = findcol(line, "R. A.", 20)
-            m1col = findcol(line, " m1", 4)
-            m2col = findcol(line, " m2", 4)
-            rhcol = findcol(line, "    r", 7)
-            deltacol = findcol(line, " Delta", 7)
-            elongcol = findcol(line, "Elong", 5)
-            phasecol = findcol(line, "Phase", 5)
-            flag = True
-        elif line.find("</pre>") >= 0:
-            flag = False
+        if cache:
+            with open(cache_filename, 'w') as outf:
+                outf.write(data)
+            comments.append("# Cached ephemeris to file {}"
+                            .format(cache_filename))
 
-        if flag:
-            date += getcol(line, datecol)
-            radec += getcol(line, radeccol)
-            m1 += getcol(line, m1col)
-            m2 += getcol(line, m2col)
-            rh += getcol(line, rhcol)
-            delta += getcol(line, deltacol)
-            elong += getcol(line, elongcol)
-            phase += getcol(line, phasecol)
-    inf.close()
-
-    date = [date[0].replace('Date  ', '# Date')] + date[1:]
-    return date, radec, rh, delta, phase, elong, m1, m2
-
-######################################################################
-def ephFromHORIZONS(fn):
-    """Read an ephemeris from saved HORIZONS output."""
-    flag = False
-    date = []
-    rh = []
-    delta = []
-    phase = []
-    radec = []
-    m1 = []
-    m2 = []
-    elong = []
-
-    print("# Reading ephemeris from file {0}".format(fn))
-    inf = open(fn, 'rU')
-    for line in inf:
-        line = line.replace('\n', '')
+    rows = []
+    reading_table = False
+    for line in data.splitlines():
         if len(line) == 0:
             # Skip blank lines
             continue
         elif line.find("Date__(UT)__HR:MN") >= 0:
-            datecol = findcol(line, "Date__(UT)__HR:MN", 17)
-            radeccol = findcol(line, "R.A.", 23)
-            m1col = findcol(line, "T-mag", 5)
-            m2col = findcol(line, "N-mag", 5)
-            rhcol = findcol(line, "             r", 14)
-            deltacol = findcol(line, "           delta", 16)
-            elongcol = findcol(line, "  S-O-T", 7)
-            phasecol = findcol(line, "  S-T-O", 7)
-            flag = True
+            names = [name.strip() for name in line.split(',')]
         elif line[0] in ['*', '>']:
             # The first line after the column labels is full of stars,
             # skip it.  Also skip ">..... Airmass Cut-off Requested
             # .....<" and simlar lines.
             continue
         elif line.find("$$SOE") >= 0:
-            flag = True
+            reading_table = True
             continue
         elif line.find("$$EOE") >= 0:
-            flag = False
+            reading_table = False
 
-        if flag:
-            date += getcol(line, datecol)
-            radec += getcol(line, radeccol)
-            m1 += getcol(line, m1col)
-            m2 += getcol(line, m2col)
-            rh += getcol(line, rhcol)
-            delta += getcol(line, deltacol)
-            elong += getcol(line, elongcol)
-            phase += getcol(line, phasecol)
+        if reading_table:
+            rows.append(line.split(','))
 
-    date = [date[0].replace('Date__', '# Date')] + date[1:]
-    inf.close()
-    return date, radec, rh, delta, phase, elong, m1, m2
+    # unpack rows into columns
+    columns = list(zip(*rows))
+
+    #  Date__(UT)__HR:MN, , , R.A._(ICRF), DEC__(ICRF),    T-mag,  N-mag,
+    #  r,       rdot,             delta,     deldot,     S-O-T,/r,     S-T-O,
+
+    # align formats with column_labels
+    date = getcol('Date__(UT)__HR:MN', names, columns, str, '{:11.11s}')
+    ra = getcol('R.A._(ICRF)', names, columns, str, '{:8.8}')
+    dec = getcol('DEC__(ICRF)', names, columns, str, '{:9.9}')
+
+    if 'T-mag' in names:
+        m1 = getcol('T-mag', names, columns, float, '{:6.1f}')
+    elif 'APmag' in names:
+        m1 = getcol('APmag', names, columns, float, '{:6.1f}')
+    else:
+        m1 = ["-999.0"] * len(date)
+
+    if 'N-mag' in names:
+        m2 = getcol('N-mag', names, columns, float, '{:6.1f}')
+
+    rh = getcol('r', names, columns, float, "{:7.3f}")
+    rdot = getcol('rdot', names, columns, float, "{:6.2f}")
+    delta = getcol('delta', names, columns, float, "{:7.3f}")
+    phase = getcol('S-T-O', names, columns, float, "{:5.1f}")
+    elong = getcol('S-O-T', names, columns, float, "{:5.1f}")
+
+    return comments, (date, ra, dec, rdot, rh, delta, phase, elong, m1, m2)
 
 ######################################################################
+
+
 def Planck(w, T):
     """Planck function, w in micron, T in Kelvin, returns Jy/sr"""
     c = 299792458.0       # m / s
@@ -222,6 +195,8 @@ def Planck(w, T):
     return bb * 1e26  # Jy/sr
 
 ######################################################################
+
+
 def solarflux(wave):
     """Compute solar flux at 1 AU from Planck fits to the E490 solar
     spectrum, wave in micron, returns Jy.
@@ -230,6 +205,7 @@ def solarflux(wave):
     Spectral Irradiance Tables, Standard E490-00, American Society for
     Testing and Materials, West Conshohocken, PA. DOI:
     10.1520/E0490-00A
+
     """
 
     # Effective temperature and scale factors for specific wavelength
@@ -237,30 +213,39 @@ def solarflux(wave):
     # E490 solar spectrum.  Constant factors are off by 1e-6.
     wr = [0.25, 0.3, 0.4, 0.6, 1.0, 3, 15, 1000]
     T = [4314.61197745,   3481.34463333,   5423.31619964,   5647.24199052,
-         5956.22455712,   5603.4862923 ,  15713.71462831,   5567.2174255 ]
+         5956.22455712,   5603.4862923,  15713.71462831,   5567.2174255]
     C = [456.14811902,  10406.45036821,     81.24840108,     80.85349485,
-          61.69931996,     80.06401576,     19.205273  ,     54.43270809]
+         61.69931996,     80.06401576,     19.205273,     54.43270809]
     for i in range(len(wr)):
         if wave < wr[i]:
             break
     return Planck(wave, T[i]) * C[i] * 1e-6  # Jy
 
 ######################################################################
+
+
 def Phi(phase):
-    """The comet scattering phase function approximation from
-    Kolokolova et al. 2004, Comets II."""
-    poly = [1.00920684,
-            -0.030960895700000001,
-            0.00073425552100000004,
-            -7.8471425500000002e-06,
-            3.1410548899999999e-08]
-    phi = 0.0
-    for n, a in enumerate(poly):
-        phi += a * phase**n
-    return phi
+    """Schleicher-Marcus composite dust phase function.
+
+    https://asteroid.lowell.edu/comet/dustphase.html
+
+    poly = numpy.polyfit(phase, np.log(Phi), 15)
+
+    """
+
+    poly = [-4.18333309e-28,  5.35573558e-25, -3.08872896e-22,  1.06046391e-19,
+            -2.41335350e-17,  3.83575272e-15, -4.37002219e-13,  3.60442966e-11,
+            -2.14712204e-09,  9.10610301e-08, -2.67297160e-06,  5.17828164e-05,
+            -6.12571415e-04,  4.28105373e-03, -5.16505213e-02,  4.74438834e-03]
+    log_phi = 0.0
+    for p in poly:
+        log_phi = log_phi * phase + p
+    return math.exp(log_phi)
 
 ######################################################################
-def fest(rh, delta, phase, wave, tscale, meana, rap, afrho1, slope):
+
+
+def fest(rh, delta, phase, wave, tscale, ef2af, rap, afrho1, slope):
     """Thermal emission + scattered light in Jy.
 
     rh, delta in AU
@@ -275,95 +260,146 @@ def fest(rh, delta, phase, wave, tscale, meana, rap, afrho1, slope):
     afrho = afrho1 * rh**-slope
     T = 278. * tscale / math.sqrt(rh)
     deltacm = delta * 1.49597870691e13
-    A = Phi(0) * 0.7655 * meana
     B = Planck(wave, T)
+    rho_d2 = rap / 206265.0 / deltacm  # rho / delta**2
 
-    Fem = (1.0 - meana) * afrho / A * math.pi * B
-    Fem *= rap / 206265.0 / deltacm
+    Fem = ef2af * afrho * math.pi * B * rho_d2
 
     # scattered light
-    Fsca = afrho * Phi(phase) / 4.0 / deltacm
-    Fsca *= rap / 206265.0 * solarflux(wave) / rh**2
+    Fsca = afrho * Phi(phase) / 4.0 * rho_d2 * solarflux(wave) / rh**2
 
-    return Fem + Fsca
+    return afrho, Fem + Fsca
+
 
 ######################################################################
-# parse command line options
-parser = optparse.OptionParser(
-    usage="""usage: %prog [options] <file or designation>
+# parse command line args
 
-where <file> is the name of a saved JPL HORIZONS ephemeris file or
-<designation> = 2P, 101P, "C/2009 P1", etc. to download an ephemeris
-from the Minor Planet Center.  NOTE that the output columns will
-likely be in an order different from the MPC and HORIZONS formats.
+today = datetime.date.today().strftime('%Y-%m-%d')
+next_year = (datetime.date.today() +
+             datetime.timedelta(365)
+             ).strftime('%Y-%m-%d')
 
-When generating HORIZONS ephemerides, select columns (1 or 2), 9, 19,
-20, 23, and 24, or "small-body geocentric".
+parser = argparse.ArgumentParser(
+    description="Estimate cometary dust coma brightness.",
+    epilog="The program uses approximations in order to be fast and concise.  The approximations are generally good to 10%, but estimates at wavelengths less than 0.4 μm are especially poor."
+)
 
-The program uses many approximations in order to be fast and concise.
-Estimates at wavelengths less than 0.4 um are especially poor.  For
-the most part, the approximations are good to 10%, and the method is
-good to a factor of 4.""", version="%prog 1.1.0")
-parser.add_option('-w', '--wavelength', default='5,10,20',
-                  help='the wavelength(s), micron (comma separated) [5,10,20]')
-parser.add_option('-t', '--tscale', type=float, default=1.1,
-                  help='the temperature scale factor [1.1]')
-parser.add_option('--meana', type=float, default=0.32,
-                  help='the mean bolometric albedo [0.32]')
-parser.add_option('-r', '--rap', type=float, default=0.5,
-                  help='aperture radius, arcsec [0.5]')
-parser.add_option('-a', '--afrho', type=float, default=100,
-                  help='Afrho at 1 AU, cm [100]')
-parser.add_option('-k', '--slope', type=float, default=2.3,
-                  help='Afrho slope: rh**-k [2.3]')
-options, args = parser.parse_args()
+parser.add_argument(
+    '-d', '--designation', help="a small solar system object designation, must be resolvable by JPL Horizons (for dual-listed objects, try the asteroidal designation) when -f is not used")
+parser.add_argument(
+    '-f', help='read target ephemeris from this file (Horizons CSV output and quantities 1,9,19,20,23,24)')
+parser.add_argument('-w', '--wave', '--wavelength', default='5,10,20',
+                    help='the wavelength(s), μm (comma separated) [5,10,20]')
+parser.add_argument('-t', '--tscale', type=float, default=1.1,
+                    help='the temperature scale factor [1.1]')
+parser.add_argument('--ef2af', type=float, default=3.5,
+                    help='ratio of εf/Af (emissivity, filling factor, albedo) [3.5]')
+parser.add_argument('-r', '--rap', type=float, default=0.5,
+                    help='aperture radius, arcsec [0.5]')
+parser.add_argument('-a', '--afrho', type=float, default=100,
+                    help='Afrho at 1 AU, cm [100]')
+parser.add_argument('-k', '--slope', type=float, default=2.3,
+                    help='Afrho slope: rh**-k [2.3]')
+parser.add_argument('-e', '--elong', default='0,180',
+                    help='comma-separated solar elongation limits [0,180]')
+parser.add_argument('--start', default=today, help='start date, UTC [today]')
+parser.add_argument('--stop', default=next_year,
+                    help='stop date, UTC [today + 1 year]')
+parser.add_argument('--step', default='5d', help='step size [5d]')
+parser.add_argument('-s', '--surface-brightness', action='store_true',
+                    help='output surface brightness instead of flux density')
+parser.add_argument('-o', help='save results to this file')
 
-# print help, if the user needs it
-if len(args) != 1:
-    parser.print_help()
-    exit(0)
+args = parser.parse_args()
+elong_limits = [float(e) for e in args.elong.split(',')]
+elong_limits = min(elong_limits), max(elong_limits)
+
+if args.designation is None and args.f is None:
+    raise ValueError('One of --designation or -f is required.')
+
+if (args.f is not None) and (not os.path.exists(args.f)):
+    raise ValueError(
+        'Specified ephemeris file does not exist {}'.format(args.f))
 
 # setup wavelengths and column formats
-wave = options.wavelength.split(',')
+wave = args.wave.split(',')
 w = [float(x) for x in wave]
-cwidth = [max(len(x) + 4, 9) for x in wave]
-cformat = ["  {{0:{0}.4g}}".format(x) for x in cwidth]
-clabels = ["{0:^{1}}".format("F({0})".format(x), y)
-           for x, y in zip(wave, cwidth)]
-clabels = "  ".join(clabels)
 
-# MPC or HORIZONS ephemeris?
-if os.path.exists(args[0]):
-    # HORIZONS
-    eph = ephFromHORIZONS(args[0])
-else:
-    # MPC
-    eph = ephFromMPC(args[0])
+column_widths = [10, 8, 9, 6, 7, 7, 5, 5, 6, 6, 10]
+column_labels = ['Date', 'RA', 'Dec', 'rdot', 'rh',
+                 'Delta', 'phase', 'elong', 'm1', 'm2', 'A(0)frho']
+
+for _w in wave:
+    column_widths.append(9)
+    if args.surface_brightness:
+        column_labels.append('S({})'.format(_w))
+    else:
+        column_labels.append('F({})'.format(_w))
+
+column_labels = ['{0:{1}.{1}}'.format(label, width)
+                 for label, width in zip(column_labels, column_widths)]
+column_underlines = ['{0:{1}.{1}}'.format('-' * width, width)
+                     for width in column_widths]
+
+comments, eph = eph_from_HORIZONS(args)
 
 # compute fluxes and print
-for date, radec, rh, delta, phase, elong, m1, m2 in zip(*eph):
-    if date[0] == '#':
-        print("""#
-# Afrho at 1 AU = {0} cm
-# Afrho scales with rh**-{1}
-# Effective temperature = {2} * 278 / sqrt(rh)
-# Mean bolometric albedo = {3}
-# Aperture radius = {4}"
+results = """# {date}
+# Estimates follow the approach of Kelley et al. (2016, PASP 128, 018009).
 #
-# Flux units are Jy
+{comments}
+#
+# Target: {desg}
+# A(0)frho at 1 AU = {afrho} cm
+# A(0)frho scales with rh**-{slope}
+# Phase function = Schleicher-Marcus
+# Effective temperature = {tscale} * 278 / sqrt(rh)
+# εf/Af = {ef2af}
+# Aperture radius = {rap}"
+# Solar elongation limits = {elong}
+#
+# {output} units are {unit}
 #
 # -999 is a flag for missing data
-#""".format(options.afrho, options.slope, options.tscale, options.meana,
-            options.rap))
-        print(date, radec, rh, delta, phase, elong, m1, m2, clabels,
-              sep='  ')
-    else:
-        print(date, radec, rh, delta, phase, elong, m1, m2, sep='  ',
-              end='')
-        for i in range(len(wave)):
-                # compute the flux for this line in the ephemeris
-            F = fest(float(rh), float(delta), float(phase), w[i],
-                     options.tscale, options.meana, options.rap,
-                     options.afrho, options.slope)
-            print(cformat[i].format(F), end='')
-        print()
+#
+{labels}
+{underlines}
+""".format(date=datetime.datetime.now().isoformat(),
+           comments='\n'.join(comments),
+           desg='unspecified' if args.designation is None else args.designation,
+           afrho=args.afrho,
+           slope=args.slope,
+           tscale=args.tscale,
+           ef2af=args.ef2af,
+           rap=args.rap,
+           elong=args.elong,
+           output='Surface brightness' if args.surface_brightness else 'Flux',
+           unit='Jy/arcsec2' if args.surface_brightness else 'Jy',
+           labels='  '.join(column_labels),
+           underlines='  '.join(column_underlines))
+
+A = math.pi * args.rap**2
+for date, ra, dec, rdot, rh, delta, phase, elong, m1, m2 in zip(*eph):
+    if (elong_limits[0] > float(elong)) or (elong_limits[1] < float(elong)):
+        continue
+
+    results += '  '.join((date, ra, dec, rdot, rh,
+                          delta, phase, elong, m1, m2))
+
+    for i in range(len(wave)):
+        # compute the flux for this line in the ephemeris
+        afrho, F = fest(float(rh), float(delta), float(phase), w[i],
+                        args.tscale, args.ef2af, args.rap,
+                        args.afrho, args.slope)
+        if i == 0:
+            results += '  {:10.5g}'.format(afrho)
+        if args.surface_brightness:
+            results += '  {:9.4f}'.format(F / A)
+        else:
+            results += '  {:9.4f}'.format(F)
+    results += '\n'
+
+print(results)
+if args.o is not None:
+    with open(args.o, 'w') as outf:
+        outf.write(results)
