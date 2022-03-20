@@ -5,6 +5,11 @@
 # v1.1.0 Added ability to read HORIZONS ephemeris files.  Revamped
 #        output to include more columns.  MSK, 03 Sep 2011
 #
+# v1.1.1 Bug fix to handle "Airmass cut-off requested" and similar
+#        lines in HORIZONS output.  In the future, fix the program so
+#        that these lines are printed out as comments.  MSK, 05 Sep
+#        2011
+#
 from __future__ import print_function
 import os
 import math
@@ -163,7 +168,11 @@ def ephFromHORIZONS(fn):
     print("# Reading ephemeris from file {0}".format(fn))
     inf = open(fn, 'r')
     for line in inf.readlines():
-        if line.find("Date__(UT)__HR:MN") >= 0:
+        line = line.replace('\n', '')
+        if len(line) == 0:
+            # Skip blank lines
+            continue
+        elif line.find("Date__(UT)__HR:MN") >= 0:
             datecol = findcol(line, "Date__(UT)__HR:MN", 17)
             radeccol = findcol(line, "R.A.", 23)
             m1col = findcol(line, "T-mag", 5)
@@ -173,10 +182,11 @@ def ephFromHORIZONS(fn):
             elongcol = findcol(line, "  S-O-T", 7)
             phasecol = findcol(line, "  S-T-O", 7)
             flag = True
-        elif line[0] == '*':
+        elif line[0] in ['*', '>']:
             # The first line after the column labels is full of stars,
-            # skip it
-            flag = False
+            # skip it.  Also skip ">..... Airmass Cut-off Requested
+            # .....<" and simlar lines.
+            continue
         elif line.find("$$SOE") >= 0:
             flag = True
             continue
@@ -221,7 +231,7 @@ def solarflux(wave):
 
     # Effective temperature and scale factors for specific wavelength
     # ranges, determined by fitting a scaled Planck function to the
-    # E490 solar spectrum.  Constant factors are off by 1e-6
+    # E490 solar spectrum.  Constant factors are off by 1e-6.
     wr = [0.25, 0.3, 0.4, 0.6, 1.0, 3, 15, 1000]
     T = [4314.61197745,   3481.34463333,   5423.31619964,   5647.24199052,
          5956.22455712,   5603.4862923 ,  15713.71462831,   5567.2174255 ]
