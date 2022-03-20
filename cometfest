@@ -1,0 +1,244 @@
+#!/usr/bin/env python
+#
+# v1.0.0 Written by Michael S. Kelley, UMD, Aug 2011
+#
+from __future__ import print_function
+import os
+import math
+import optparse 
+import re
+import urllib2
+
+######################################################################
+def packedNumber(number):
+    """Convert a number into a 2-digit packed MPC number."""
+    if len(number) > 2:
+        letter = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+        i = int(number[:len(number)-1]) - 10
+        return letter[i] + number[2:]
+    else:
+        return "{0:02}".format(int(number))
+
+######################################################################
+def desg2mpc(name):
+    """Convert a comet designation into a packed MPC comet
+    designation."""
+    name = name.upper()
+    periodicFormat = re.compile('([0-9]{1,4})([PD])(-[A-Z]+){0,1}')
+    m = periodicFormat.findall(name)
+    if len(m) > 0:
+        return "{0:04d}P".format(int(m[0][0]))
+
+    provFormat = re.compile('([PCDX])/([12][890])([0-9][0-9])\s([A-Z]{1,2})([0-9]{1,3})(-[A-Z]+)*')
+    m = provFormat.findall(name)
+    if len(m) > 0:
+        comtype, century, year, letter, number, fragment = m[0]
+        packedDesg = comtype
+
+        if century == '18':
+            packedDesg += 'I'
+        elif century == '19':
+            packedDesg += 'J'
+        elif century == '20':
+            packedDesg += 'K'
+
+        packedDesg += year
+
+
+        if len(letter) == 1:
+            packedDesg += letter
+            packedDesg += packedNumber(number)
+            if len(fragment) > 0:
+                packedDesg += fragment[1].lower()
+            else:
+                packedDesg += '0'
+        else:
+            packedDesg += letter[0]
+            packedDesg += packedNumber(number)
+            if len(letter) == 2:
+                packedDesg += letter[1]
+
+    return packedDesg
+
+######################################################################
+def ephFromMPC(comet):
+    """First, check if there is a file ephemeris, else download an
+    ephemeris file from the MPC and return date, rh, delta, phase."""
+    packedDesg = desg2mpc(comet)
+    fn = "{0}.dat".format(packedDesg)
+    flag = False
+    date = []
+    rh = []
+    delta = []
+    phase = []
+
+    if os.path.exists(fn):
+        print("# Reading ephemeris from file {0}".format(fn))
+        inf = open(fn, 'r')
+        for line in inf.readlines():
+            if line.find("Date    TT") >= 0:
+                flag = True
+            elif line.find("</pre>") >= 0:
+                flag = False
+
+            if flag:
+                date += [line[:10]]
+                rh += [line[44:51]]
+                delta += [line[36:43]]
+                phase += [line[62:67]]
+        inf.close()
+    else:
+        url = 'http://scully.cfa.harvard.edu/cgi-bin/returnprepeph.cgi?d=c&o={0}'.format(packedDesg)
+        url = urllib2.urlopen(url)
+        dump = url.readlines()
+        url.close()
+
+        outf = open(fn, 'w')
+        for line in dump:
+            outf.write(line)
+            if line.find("Date    TT") >= 0:
+                flag = True
+            elif line.find("</pre>") >= 0:
+                flag = False
+
+            if flag:
+                date += [line[:10]]
+                rh += [line[44:51]]
+                delta += [line[36:43]]
+                phase += [line[62:67]]
+        outf.close()
+
+    return date, rh, delta, phase
+
+######################################################################
+def Planck(w, T):
+    """Planck function, w in micron, T in Kelvin, returns Jy/sr"""
+    c = 299792458.0       # m / s
+    c1 = 3.972894922e-25  # 2 h c
+    c2 = 1.438768660e-2  # h c / k
+    wave = w * 1e-6  # um to m
+    a = math.exp(c2 / wave / T)
+    bb = c1 / (wave**3 * (a - 1.0))  # J / s / m2 / sr / Hz
+    return bb * 1e26  # Jy/sr
+
+######################################################################
+def solarflux(wave):
+    """Compute solar flux at 1 AU from Planck fits to the E490
+    spectrum, wave in micron, returns Jy."""
+
+    # Effective temperature and scale factors for specific wavelength
+    # ranges, determined by fitting a scaled Planck function to the
+    # E490 solar spectrum.  Constant factors are off by 1e-6
+    wr = [0.25, 0.3, 0.4, 0.6, 1.0, 3, 15, 1000]
+    T = [4314.61197745,   3481.34463333,   5423.31619964,   5647.24199052,
+         5956.22455712,   5603.4862923 ,  15713.71462831,   5567.2174255 ]
+    C = [456.14811902,  10406.45036821,     81.24840108,     80.85349485,
+          61.69931996,     80.06401576,     19.205273  ,     54.43270809]
+    for i in range(len(wr)):
+        if wave < wr[i]:
+            break
+    return Planck(wave, T[i]) * C[i] * 1e-6  # Jy
+
+######################################################################
+def Phi(phase):
+    """The comet scattering phase function approximation from
+    Kolokolova et al. 2004, Comets II."""
+    poly = [1.00920684,
+            -0.030960895700000001,
+            0.00073425552100000004,
+            -7.8471425500000002e-06,
+            3.1410548899999999e-08]
+    phi = 0.0
+    for n, a in enumerate(poly):
+        phi += a * phase**n
+    return phi
+
+######################################################################
+def fest(rh, delta, phase, wave, tscale, meana, rap, afrho1, slope):
+    """Thermal emission + scattered light in Jy.
+
+    rh, delta in AU
+    phase in degrees
+    wave in micron
+    rap in arcsec
+    afrho1 in cm
+
+    """
+
+    # thermal emission
+    afrho = afrho1 * rh**-slope
+    T = 278. * tscale / math.sqrt(rh)
+    deltacm = delta * 1.49597870691e13
+    A = Phi(0) * 0.7655 * meana
+    B = Planck(wave, T)
+
+    Fem = (1.0 - meana) * afrho / A * math.pi * B
+    Fem *= rap / 206265.0 / deltacm
+
+    # scattered light
+    Fsca = afrho * Phi(phase) / 4.0 / deltacm
+    Fsca *= rap / 206265.0 * solarflux(wave) / rh**2
+
+    return Fem + Fsca
+
+######################################################################
+# parse command line options
+parser = optparse.OptionParser(
+    usage="""usage: %prog [options] designation
+
+where designation = 2P, 101P, "C/2009 P1", etc.
+
+The program uses many approximations in order to be fast and concise.
+Estimates at wavelengths less than 0.4 um are especially poor.  For
+the most part, the approximations are good to 10%, and the method is
+good to a factor of 4.""", version="%prog 1.0.0")
+parser.add_option('-w', '--wavelength', default='5,10,20',
+                  help='the wavelength(s), micron (comma separated) [5,10,20]')
+parser.add_option('-t', '--tscale', type=float, default=1.1,
+                  help='the temperature scale factor [1.1]')
+parser.add_option('--meana', type=float, default=0.32,
+                  help='the mean bolometric albedo [0.32]')
+parser.add_option('-r', '--rap', type=float, default=0.5,
+                  help='aperture radius, arcsec [0.5]')
+parser.add_option('-a', '--afrho', type=float, default=100,
+                  help='Afrho at 1 AU, cm [100]')
+parser.add_option('-k', '--slope', type=float, default=2.3,
+                  help='Afrho slope: rh**-k [2.3]')
+options, args = parser.parse_args()
+
+# print help, if the user needs it
+if len(args) != 1:
+    parser.print_help()
+    exit(0)
+
+# setup wavelengths and column formats
+wave = options.wavelength.split(',')
+w = [float(x) for x in wave]
+cwidth = [max(len(x) + 4, 9) for x in wave]
+cformat = [" {{0:{0}.4g}}".format(x) for x in cwidth]
+clabels = ["{0:^{1}}".format("F({0})".format(x), y)
+           for x, y in zip(wave, cwidth)]
+clabels = " ".join(clabels)
+
+# parse the ephemeris
+eph = ephFromMPC(args[0])
+for date, rh, delta, phase in zip(*eph):
+    if date[0] == 'D':
+        print("""#
+# Afrho at 1 AU = {0} cm
+# Afrho scales with rh**-{1}
+# Effective temperature = {2} * 278 / sqrt(rh)
+# Mean bolometric albedo = {3}
+# Aperture radius = {4}"
+#""".format(options.afrho, options.slope, options.tscale, options.meana,
+            options.rap))
+        print(date.replace('Date  ', '# Date'), rh, delta, phase, clabels)
+    else:
+        print(date, rh, delta, phase, end='')
+        for i in range(len(wave)):
+            # compute the flux for this line in the ephemeris
+            F = fest(float(rh), float(delta), float(phase), w[i],
+                     options.tscale, options.meana, options.rap,
+                     options.afrho, options.slope)
+            print(cformat[i].format(F), end='')
+        print()
