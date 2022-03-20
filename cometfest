@@ -2,12 +2,35 @@
 #
 # v1.0.0 Written by Michael S. Kelley, UMD, Aug 2011
 #
+# v1.1.0 Added ability to read HORIZONS ephemeris files.  Revamped
+#        output to include more columns.  MSK, 03 Sep 2011
+#
 from __future__ import print_function
 import os
 import math
 import optparse 
 import re
 import urllib2
+
+######################################################################
+def findcol(header, colname, length):
+    """Return the slice that corresponds to the position of the column
+    name + length, or an empty slice if colname is not found."""
+    i = header.find(colname)
+    if i >= 0:
+        return slice(i, i + length)
+    else:
+        return slice(0, 0)
+
+######################################################################
+def getcol(line, col):
+    """Return the column specified by the slice col, formatted to a
+    specificed width.  Replace empty columns or "n.a." with "-999"."""
+    l = col.stop - col.start + 1
+    s = "{0:{1}}".format(line[col], l).replace("\n", '')
+    s = s.replace(" " * l, "{0:^{1}}".format("-999", l))
+    s = s.replace("n.a.", "-999")
+    return [s]
 
 ######################################################################
 def packedNumber(number):
@@ -71,23 +94,13 @@ def ephFromMPC(comet):
     rh = []
     delta = []
     phase = []
+    radec = []
+    m1 = []
+    m2 = []
+    elong = []
 
-    if os.path.exists(fn):
-        print("# Reading ephemeris from file {0}".format(fn))
-        inf = open(fn, 'r')
-        for line in inf.readlines():
-            if line.find("Date    TT") >= 0:
-                flag = True
-            elif line.find("</pre>") >= 0:
-                flag = False
-
-            if flag:
-                date += [line[:10]]
-                rh += [line[44:51]]
-                delta += [line[36:43]]
-                phase += [line[62:67]]
-        inf.close()
-    else:
+    if not os.path.exists(fn):
+        print("# Downloading ephemeris from MPC and saving to file {0}".format(fn))
         url = 'http://scully.cfa.harvard.edu/cgi-bin/returnprepeph.cgi?d=c&o={0}'.format(packedDesg)
         url = urllib2.urlopen(url)
         dump = url.readlines()
@@ -95,20 +108,94 @@ def ephFromMPC(comet):
 
         outf = open(fn, 'w')
         for line in dump:
-            outf.write(line)
             if line.find("Date    TT") >= 0:
                 flag = True
             elif line.find("</pre>") >= 0:
                 flag = False
-
             if flag:
-                date += [line[:10]]
-                rh += [line[44:51]]
-                delta += [line[36:43]]
-                phase += [line[62:67]]
+                outf.write(line)
         outf.close()
+    else:
+        print("# Reading ephemeris from file {0}".format(fn))
 
-    return date, rh, delta, phase
+    inf = open(fn, 'r')
+    for line in inf.readlines():
+        if line.find("Date    TT") >= 0:
+            datecol = findcol(line, "Date", 10)
+            radeccol = findcol(line, "R. A.", 20)
+            m1col = findcol(line, " m1", 4)
+            m2col = findcol(line, " m2", 4)
+            rhcol = findcol(line, "    r", 7)
+            deltacol = findcol(line, " Delta", 7)
+            elongcol = findcol(line, "Elong", 5)
+            phasecol = findcol(line, "Phase", 5)
+            flag = True
+        elif line.find("</pre>") >= 0:
+            flag = False
+
+        if flag:
+            date += getcol(line, datecol)
+            radec += getcol(line, radeccol)
+            m1 += getcol(line, m1col)
+            m2 += getcol(line, m2col)
+            rh += getcol(line, rhcol)
+            delta += getcol(line, deltacol)
+            elong += getcol(line, elongcol)
+            phase += getcol(line, phasecol)
+    inf.close()
+
+    date = [date[0].replace('Date  ', '# Date')] + date[1:]
+    return date, radec, rh, delta, phase, elong, m1, m2
+
+######################################################################
+def ephFromHORIZONS(fn):
+    """Read an ephemeris from saved HORIZONS output."""
+    flag = False
+    date = []
+    rh = []
+    delta = []
+    phase = []
+    radec = []
+    m1 = []
+    m2 = []
+    elong = []
+
+    print("# Reading ephemeris from file {0}".format(fn))
+    inf = open(fn, 'r')
+    for line in inf.readlines():
+        if line.find("Date__(UT)__HR:MN") >= 0:
+            datecol = findcol(line, "Date__(UT)__HR:MN", 17)
+            radeccol = findcol(line, "R.A.", 23)
+            m1col = findcol(line, "T-mag", 5)
+            m2col = findcol(line, "N-mag", 5)
+            rhcol = findcol(line, "             r", 14)
+            deltacol = findcol(line, "           delta", 16)
+            elongcol = findcol(line, "  S-O-T", 7)
+            phasecol = findcol(line, "  S-T-O", 7)
+            flag = True
+        elif line[0] == '*':
+            # The first line after the column labels is full of stars,
+            # skip it
+            flag = False
+        elif line.find("$$SOE") >= 0:
+            flag = True
+            continue
+        elif line.find("$$EOE") >= 0:
+            flag = False
+
+        if flag:
+            date += getcol(line, datecol)
+            radec += getcol(line, radeccol)
+            m1 += getcol(line, m1col)
+            m2 += getcol(line, m2col)
+            rh += getcol(line, rhcol)
+            delta += getcol(line, deltacol)
+            elong += getcol(line, elongcol)
+            phase += getcol(line, phasecol)
+
+    date = [date[0].replace('Date__', '# Date')] + date[1:]
+    inf.close()
+    return date, radec, rh, delta, phase, elong, m1, m2
 
 ######################################################################
 def Planck(w, T):
@@ -123,8 +210,14 @@ def Planck(w, T):
 
 ######################################################################
 def solarflux(wave):
-    """Compute solar flux at 1 AU from Planck fits to the E490
-    spectrum, wave in micron, returns Jy."""
+    """Compute solar flux at 1 AU from Planck fits to the E490 solar
+    spectrum, wave in micron, returns Jy.
+
+    ASTM, 2000. Standard Solar Constant and Air Mass Zero Solar
+    Spectral Irradiance Tables, Standard E490-00, American Society for
+    Testing and Materials, West Conshohocken, PA. DOI:
+    10.1520/E0490-00A
+    """
 
     # Effective temperature and scale factors for specific wavelength
     # ranges, determined by fitting a scaled Planck function to the
@@ -184,14 +277,20 @@ def fest(rh, delta, phase, wave, tscale, meana, rap, afrho1, slope):
 ######################################################################
 # parse command line options
 parser = optparse.OptionParser(
-    usage="""usage: %prog [options] designation
+    usage="""usage: %prog [options] <file or designation>
 
-where designation = 2P, 101P, "C/2009 P1", etc.
+where <file> is the name of a saved JPL HORIZONS ephemeris file or
+<designation> = 2P, 101P, "C/2009 P1", etc. to download an ephemeris
+from the Minor Planet Center.  NOTE that the output columns will
+likely be in an order different from the MPC and HORIZONS formats.
+
+When generating HORIZONS ephemerides, select columns (1 or 2), 9, 19,
+20, 23, and 24, or "small-body geocentric".
 
 The program uses many approximations in order to be fast and concise.
 Estimates at wavelengths less than 0.4 um are especially poor.  For
 the most part, the approximations are good to 10%, and the method is
-good to a factor of 4.""", version="%prog 1.0.0")
+good to a factor of 4.""", version="%prog 1.1.0")
 parser.add_option('-w', '--wavelength', default='5,10,20',
                   help='the wavelength(s), micron (comma separated) [5,10,20]')
 parser.add_option('-t', '--tscale', type=float, default=1.1,
@@ -215,28 +314,39 @@ if len(args) != 1:
 wave = options.wavelength.split(',')
 w = [float(x) for x in wave]
 cwidth = [max(len(x) + 4, 9) for x in wave]
-cformat = [" {{0:{0}.4g}}".format(x) for x in cwidth]
+cformat = ["  {{0:{0}.4g}}".format(x) for x in cwidth]
 clabels = ["{0:^{1}}".format("F({0})".format(x), y)
            for x, y in zip(wave, cwidth)]
-clabels = " ".join(clabels)
+clabels = "  ".join(clabels)
 
-# parse the ephemeris
-eph = ephFromMPC(args[0])
-for date, rh, delta, phase in zip(*eph):
-    if date[0] == 'D':
+# MPC or HORIZONS ephemeris?
+if os.path.exists(args[0]):
+    # HORIZONS
+    eph = ephFromHORIZONS(args[0])
+else:
+    # MPC
+    eph = ephFromMPC(args[0])
+
+# compute fluxes and print
+for date, radec, rh, delta, phase, elong, m1, m2 in zip(*eph):
+    if date[0] == '#':
         print("""#
 # Afrho at 1 AU = {0} cm
 # Afrho scales with rh**-{1}
 # Effective temperature = {2} * 278 / sqrt(rh)
 # Mean bolometric albedo = {3}
 # Aperture radius = {4}"
+#
+# -999 is a flag for missing data
 #""".format(options.afrho, options.slope, options.tscale, options.meana,
             options.rap))
-        print(date.replace('Date  ', '# Date'), rh, delta, phase, clabels)
+        print(date, radec, rh, delta, phase, elong, m1, m2, clabels,
+              sep='  ')
     else:
-        print(date, rh, delta, phase, end='')
+        print(date, radec, rh, delta, phase, elong, m1, m2, sep='  ',
+              end='')
         for i in range(len(wave)):
-            # compute the flux for this line in the ephemeris
+                # compute the flux for this line in the ephemeris
             F = fest(float(rh), float(delta), float(phase), w[i],
                      options.tscale, options.meana, options.rap,
                      options.afrho, options.slope)
