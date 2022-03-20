@@ -10,6 +10,9 @@
 #        that these lines are printed out as comments.  MSK, 05 Sep
 #        2011
 #
+# v1.1.2 Bug fix to handle Mac formatted text files (boo to Macs!).
+#        MSK, 15 Sep 2011
+#
 from __future__ import print_function
 import os
 import math
@@ -123,7 +126,7 @@ def ephFromMPC(comet):
     else:
         print("# Reading ephemeris from file {0}".format(fn))
 
-    inf = open(fn, 'r')
+    inf = open(fn, 'rU')
     for line in inf.readlines():
         if line.find("Date    TT") >= 0:
             datecol = findcol(line, "Date", 10)
@@ -166,8 +169,8 @@ def ephFromHORIZONS(fn):
     elong = []
 
     print("# Reading ephemeris from file {0}".format(fn))
-    inf = open(fn, 'r')
-    for line in inf.readlines():
+    inf = open(fn, 'rU')
+    for line in inf:
         line = line.replace('\n', '')
         if len(line) == 0:
             # Skip blank lines
@@ -346,6 +349,8 @@ for date, radec, rh, delta, phase, elong, m1, m2 in zip(*eph):
 # Effective temperature = {2} * 278 / sqrt(rh)
 # Mean bolometric albedo = {3}
 # Aperture radius = {4}"
+#
+# Flux units are Jy
 #
 # -999 is a flag for missing data
 #""".format(options.afrho, options.slope, options.tscale, options.meana,
