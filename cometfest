@@ -281,6 +281,7 @@ next_year = (datetime.date.today() +
 
 parser = argparse.ArgumentParser(
     description="Estimate cometary dust coma brightness.",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     epilog="The program uses approximations in order to be fast and concise.  The approximations are generally good to 10%, but estimates at wavelengths less than 0.4 μm are especially poor."
 )
 
@@ -289,23 +290,24 @@ parser.add_argument(
 parser.add_argument(
     '-f', help='read target ephemeris from this file (Horizons CSV output and quantities 1,9,19,20,23,24)')
 parser.add_argument('-w', '--wave', '--wavelength', default='5,10,20',
-                    help='the wavelength(s), μm (comma separated) [5,10,20]')
+                    help='the wavelength(s), μm (comma separated)')
 parser.add_argument('-t', '--tscale', type=float, default=1.1,
-                    help='the temperature scale factor [1.1]')
+                    help='the temperature scale factor')
 parser.add_argument('--ef2af', type=float, default=3.5,
-                    help='ratio of εf/Af (emissivity, filling factor, albedo) [3.5]')
+                    help='ratio of εf/Af (emissivity, filling factor, albedo)')
 parser.add_argument('-r', '--rap', type=float, default=0.5,
-                    help='aperture radius, arcsec [0.5]')
+                    help='aperture radius, arcsec')
 parser.add_argument('-a', '--afrho', type=float, default=100,
-                    help='Afrho at 1 AU, cm [100]')
+                    help='Afrho at 1 AU, cm')
 parser.add_argument('-k', '--slope', type=float, default=2.3,
-                    help='Afrho slope: rh**-k [2.3]')
+                    help='Afrho slope: rh**-k')
 parser.add_argument('-e', '--elong', default='0,180',
-                    help='comma-separated solar elongation limits [0,180]')
-parser.add_argument('--start', default=today, help='start date, UTC [today]')
+                    help='comma-separated solar elongation limits, degrees')
+parser.add_argument('--start', default=today,
+                    help='start date, UTC')
 parser.add_argument('--stop', default=next_year,
-                    help='stop date, UTC [today + 1 year]')
-parser.add_argument('--step', default='5d', help='step size [5d]')
+                    help='stop date, UTC')
+parser.add_argument('--step', default='5d', help='step size')
 parser.add_argument('-s', '--surface-brightness', action='store_true',
                     help='output surface brightness instead of flux density')
 parser.add_argument('-o', help='save results to this file')
